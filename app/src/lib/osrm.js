@@ -5,7 +5,7 @@ process.env.UV_THREADPOOL_SIZE = Math.ceil(os.cpus().length * 1.5);
 const OSRM = require("osrm");
 
 function loadGraph(options) {
-  const opts = { path: options.osrmDataPath, algorithm: "MLD" };
+  const opts = { path: options.osrmDataPath, algorithm: "CH" };
   return new OSRM(opts);
 }
 

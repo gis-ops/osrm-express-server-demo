@@ -14,11 +14,12 @@
     "node": ">=10.0.0"
   },
   "dependencies": {
+    "async": "^3.2.0",
     "body-parser": "^1.18.2",
     "express": "^4.16.2",
     "helmet": "^3.9.0",
     "logfmt": "^1.2.0",
-    "osrm": "5.22.0"
+    "osrm": "5.23.0"
   },
   "devDependencies": {
     "eslint": "^4.15.0",
