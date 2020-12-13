@@ -6,15 +6,13 @@ const router = express.Router();
 
 const makeChunks = (coordinates, splitLimit) => {
   const chunks = [];
-  let cIdx = 0;
   let i,
     j,
     tempArray,
     chunk = splitLimit;
   for (i = 0, j = coordinates.length; i < j; i += chunk) {
     tempArray = coordinates.slice(i, i + chunk);
-    chunks.push({ coordinates: tempArray, idx: cIdx });
-    cIdx += 1;
+    chunks.push(tempArray);
   }
   return chunks;
 };
@@ -43,7 +41,10 @@ router.post("/", (req, res) => {
     delete options.destinations;
   }
 
-  if (req.body.splitLimit && options.sources.length == 1) {
+  if (req.body.splitLimit 
+    && options.sources.length == 1 
+    && req.body.splitLimit < options.coordinates.length ) {
+    
     delete req.body.splitLimit;
 
     // Gather source coordinates
@@ -59,19 +60,16 @@ router.post("/", (req, res) => {
       chunks,
       options.parallelism,
       (chunk, callback) => {
-        chunk.coordinates.unshift(sourceCoordinates);
+        chunk.unshift(sourceCoordinates);
 
         const chunkOptions = {
           ...options,
           sources: [0],
-          coordinates: chunk.coordinates,
-          idx: chunk.idx,
+          coordinates: chunk
         };
-        //console.log(chunkOptions)
         osrm.table(chunkOptions, (err, result) => {
           if (err) {
-            //return res.status(422).json({ error: err.message });
-            callback(null, { idx: chunkOptions.idx, result: false });
+            callback(null, result);
           }
           if (chunkOptions.slim) {
             delete result.sources;
@@ -82,8 +80,7 @@ router.post("/", (req, res) => {
             result.durations[0].splice(0, 1);
             result.distances[0].splice(0, 1);
           }
-          callback(null, { idx: chunkOptions.idx, result });
-          //console.log('idx:', chunkOptions.idx, result);
+          callback(null, result);
         });
       },
       (err, results) => {
@@ -95,9 +92,8 @@ router.post("/", (req, res) => {
         };
 
         for (const result of results) {
-          console.log(result);
-          const distances = result.result.distances[0];
-          const durations = result.result.durations[0];
+          const distances = result.distances[0];
+          const durations = result.durations[0];
           mergedResults.distances.push(...distances);
           mergedResults.durations.push(...durations);
         }
