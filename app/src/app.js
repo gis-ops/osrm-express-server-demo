@@ -12,7 +12,7 @@ const osrmBindings = require("./lib/osrm");
 
 function configureMiddlewares(app) {
   app.use(helmet());
-  app.use(bodyParser.json());
+  app.use(bodyParser.json({limit: '50mb'}));
   app.use(bodyParser.urlencoded({ limit: "50mb", extended: false }));
   app.use(logfmt.requestLogger());
 }
