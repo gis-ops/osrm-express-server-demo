@@ -4,18 +4,40 @@ const async = require("async");
 
 const router = express.Router();
 
-const makeChunks = (coordinates, splitLimit) => {
-  const chunks = [];
-  let i,
-    j,
-    tempArray,
-    chunk = splitLimit;
-  for (i = 0, j = coordinates.length; i < j; i += chunk) {
-    tempArray = coordinates.slice(i, i + chunk);
-    chunks.push(tempArray);
+const range = (start, end) => {
+  return Array(end - start + 1).fill().map((_, idx) => start + idx)
+}
+
+const doBreakdown = (coordinates, limit, square=false) => {
+
+  const bins = []
+
+  if (!square) {
+    for (let x=0; x < coordinates.length; x += limit) {
+      let endX = x + limit - 1;
+      if (endX > coordinates.length - 1) {
+        endX = coordinates.length - 1;
+      }
+      bins.push({ destinations: range(x, endX) })
+    }
+  } else {
+    for (let x=0; x < coordinates.length; x += limit) {
+      let endX = x + limit - 1;
+      if (endX > coordinates.length - 1) {
+        endX = coordinates.length - 1;
+      }
+      for (let y=0; y < coordinates.length; y += limit) {
+          let endY = y + limit - 1;
+          if (endY > coordinates.length - 1) {
+            endY = coordinates.length - 1;
+          }
+          bins.push({ sources: range(x, endX), destinations: range(y, endY) })
+      }
+    }
   }
-  return chunks;
-};
+  return bins;
+}
+
 
 router.post("/", (req, res) => {
   if (!req.body.coordinates) {
@@ -25,88 +47,104 @@ router.post("/", (req, res) => {
   const osrm = req.app.get("osrm");
   const options = {
     coordinates: req.body.coordinates,
-    sources: req.body.sources,
-    destinations: req.body.destinations,
+    sources: req.body.sources || [],
+    destinations: req.body.destinations || [],
     annotations: req.body.annotations || "distance,duration",
-    // Governs what size to break the problem down into
-    splitLimit: req.body.splitLimit,
-    // How many requests to have in flight at once
-    parallelism: req.body.parallelism || 1,
-    // Remove sources and destinations in response
+    breakdown: {
+      // Governs what size to break the problem down into
+      limit: req.body.breakdown ? req.body.breakdown.limit : req.body.coordinates.length,
+      // How many requests to have in flight at once
+      parallelism: req.body.breakdown ? req.body.breakdown.parallelism : 1,  
+    },
+    // Strip sources and destinations information from response
     slim: req.body.slim || false,
   };
 
-  if (!req.body.sources || !req.body.destinations) {
-    delete options.sources;
-    delete options.destinations;
-  }
+  if (req.body.breakdown) {
 
-  if (req.body.splitLimit 
-    && options.sources.length == 1 
-    && req.body.splitLimit < options.coordinates.length ) {
-    
-    delete req.body.splitLimit;
+    delete req.body.breakdown
+    // one-to-many
+    let bins;
+    let isSquare = false;
+    //console.time("doBreakdown");
+    if (options.sources.length == 1) {
+      bins = doBreakdown(options.coordinates, options.breakdown.limit);
+    // many-to-many
+    }  else if ((options.sources.length + options.destinations.length) == 0) {
+      isSquare = true;
+      bins = doBreakdown(options.coordinates, options.breakdown.limit, isSquare)
+    }
+    //console.timeEnd("doBreakdown");
 
-    // Gather source coordinates
-    let sourceCoordinates = options.coordinates[options.sources[0]];
-
-    //  Pop from coordinates
-    options.coordinates.splice(options.sources[0], 1);
-
-    // Chunk up coordinates into user defined batches
-    const chunks = makeChunks(options.coordinates, options.splitLimit);
 
     async.mapLimit(
-      chunks,
-      options.parallelism,
-      (chunk, callback) => {
-        chunk.unshift(sourceCoordinates);
+      bins,
+      options.breakdown.parallelism,
+      (bin, callback) => {
 
-        const chunkOptions = {
+        const payload = {
           ...options,
-          sources: [0],
-          coordinates: chunk
+          sources: bin.sources || [0],
+          destinations: bin.destinations
         };
-        osrm.table(chunkOptions, (err, result) => {
+
+        //console.time("doCall");
+        osrm.table(payload, (err, result) => {
           if (err) {
             callback(null, result);
           }
-          if (chunkOptions.slim) {
+          if (options.slim) {
             delete result.sources;
             delete result.destinations;
           }
-          // postprocess response for 1:N
-          if (chunkOptions.idx > 0) {
-            result.durations[0].splice(0, 1);
-            result.distances[0].splice(0, 1);
-          }
-          callback(null, result);
+          //console.timeEnd("doCall");
+          callback(null, { ...result, sources: bin.sources, destinations: bin.destinations, isSquare } );
         });
       },
       (err, results) => {
         if (err) throw err;
 
-        const mergedResults = {
-          distances: [],
-          durations: [],
-        };
+        // Set up the durations results array
+        const durations = [];
+        // Set up the distances results array
+        const distances = []
+        //console.time("doMerge");
+        if (isSquare) {
+          for (let i=0; i < options.coordinates.length; i++) durations.push([]);
+          for (let i=0; i < options.coordinates.length; i++) distances.push([]);
 
-        for (const result of results) {
-          const distances = result.distances[0];
-          const durations = result.durations[0];
-          mergedResults.distances.push(...distances);
-          mergedResults.durations.push(...durations);
+          for (const matrix of results) {
+            const minSourceIdx = Math.min(...matrix.sources)
+            const minDestIdx = Math.min(...matrix.destinations)
+            for (const sourceIdx of matrix.sources) {
+              for (const destinationIdx of matrix.destinations ) {
+                durations[sourceIdx][destinationIdx] = matrix.durations[sourceIdx - minSourceIdx][destinationIdx - minDestIdx];
+                distances[sourceIdx][destinationIdx] = matrix.distances[sourceIdx - minSourceIdx][destinationIdx - minDestIdx];
+              }
+            }
+          }
+        } else {
+          for (const matrix of results) {
+            const minDestIdx = Math.min(...matrix.destinations)
+            for (const destinationIdx of matrix.destinations ) {
+              durations[destinationIdx] = matrix.durations[0][destinationIdx - minDestIdx];
+              distances[destinationIdx] = matrix.distances[0][destinationIdx - minDestIdx];
+            }
+          }
         }
+        //console.timeEnd("doMerge");
 
-        return res.json(mergedResults);
+        return res.json({ distances, durations });
       }
     );
   } else {
     try {
+      //console.time("doCall");
       osrm.table(options, (err, result) => {
         if (err) {
           return res.status(422).json({ error: err.message });
         }
+        //console.timeEnd("doCall");
         return res.json(result);
       });
     } catch (err) {
